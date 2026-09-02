@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Brand {
+  EPSON
+  BROTHER
+  HP
+  OTHER
+}
+
+enum ColorSlot {
+  CYAN
+  MAGENTA
+  AMARILLO
+  TRICOLOR
+  NEGRO
+}
+
+enum SkuGeneration {
+  NORMAL
+  XL
+}
+
+enum CellType {
+  BLANK
+  NUMBER
+  X
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+model Department {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  printers Printer[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Printer {
+  id            Int       @id @default(autoincrement())
+  departmentId  Int
+  department    Department @relation(fields: [departmentId], references: [id])
+  name          String
+  ip            String?
+  brand         Brand
+  model         String
+  snmpCommunity String    @default("public")
+  snmpVersion   String    @default("2c")
+  snmpPort      Int       @default(161)
+  isActive      Boolean   @default(true)
+  lastSeenAt    DateTime?
+  lastError     String?
+  excelRowAnchor Int?     // best-known starting Excel row for this printer, re-validated each cycle
+
+  cartridgeRows PrinterCartridgeRow[]
+  readings      InkLevelReading[]
+  pollResults   PollCyclePrinterResult[]
+  reorderEvents ReorderEvent[]
+  receiptEvents ReceiptEvent[]
+  emailAlertStates EmailAlertState[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([departmentId, name])
+}
+
+model PrinterCartridgeRow {
+  id            Int      @id @default(autoincrement())
+  printerId     Int
+  printer       Printer  @relation(fields: [printerId], references: [id])
+  skuGeneration SkuGeneration
+  tintaColorSku String?
+  tintaNegroSku String?
+  excelRowIndex Int      // 0-based row index in the sheet, re-validated each sync cycle
+
+  stockCells StockCell[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // La clave de identidad es el par de SKUs, no la generación: una misma
+  // impresora puede tener varias familias de cartucho vigentes a la vez
+  // (p.ej. ALDO: 302/302XL y 304/304XL), cada una con su propia fila normal y XL.
+  @@unique([printerId, tintaColorSku, tintaNegroSku])
+}
+
+model StockCell {
+  id              Int       @id @default(autoincrement())
+  cartridgeRowId  Int
+  cartridgeRow    PrinterCartridgeRow @relation(fields: [cartridgeRowId], references: [id])
+  colorSlot       ColorSlot
+  cellType        CellType
+  pendingQty      Int?
+  // Última cantidad que se confirmó escrita/presente en el Excel de verdad
+  // (null = el pendingQty actual todavía no se ha volcado al archivo).
+  // Sin esto no se puede distinguir "pedido nuevo, aún no escrito" de
+  // "ya se escribió y una persona lo ha vaciado porque llegó el pedido" —
+  // ambos casos se ven igual (BD=NUMBER, Excel=vacío) si no se recuerda cuál
+  // fue el último valor realmente confirmado en el archivo.
+  syncedPendingQty Int?
+  // Existencias de repuesto que ya tenemos físicamente en el almacén para
+  // este cartucho — mapea al bloque "STOCK" del Excel (columnas H-L),
+  // separado del bloque "PEDIR" (M-Q) que es pendingQty. Sube al confirmar
+  // la recepción de un pedido.
+  stockOnHand       Int     @default(0)
+  // Mismo concepto que syncedPendingQty pero para stockOnHand: último valor
+  // que sabemos con certeza que hay en la columna STOCK del archivo.
+  syncedStockOnHand Int?
+  lastSyncedAt    DateTime?
+  updatedAt       DateTime  @updatedAt
+  updatedByUserId Int?
+  updatedByUser   User?     @relation(fields: [updatedByUserId], references: [id])
+
+  @@unique([cartridgeRowId, colorSlot])
+}
+
+model InkLevelReading {
+  id           Int       @id @default(autoincrement())
+  printerId    Int
+  printer      Printer   @relation(fields: [printerId], references: [id])
+  colorSlot    ColorSlot
+  levelPercent Int?
+  rawValue     Int?
+  capacityRaw  Int?
+  // Para impresoras que nunca dan un % (p.ej. algunos láser Brother):
+  // alerta de tóner bajo/agotado leída por texto de prtAlertTable, la única
+  // señal fiable que dan. Ver isCriticalSupplyAlert en lib/snmp/classify.ts.
+  criticalAlert Boolean  @default(false)
+  alertText    String?
+  readAt       DateTime  @default(now())
+  pollCycleId  Int?
+  pollCycle    PollCycle? @relation(fields: [pollCycleId], references: [id])
+
+  @@index([printerId, colorSlot, readAt])
+}
+
+model PollCycle {
+  id             Int      @id @default(autoincrement())
+  startedAt      DateTime
+  finishedAt     DateTime?
+  status         String   // SUCCESS | PARTIAL | FAILED
+  printersPolled Int      @default(0)
+  printersFailed Int      @default(0)
+
+  results  PollCyclePrinterResult[]
+  readings InkLevelReading[]
+  reorders ReorderEvent[]
+}
+
+model PollCyclePrinterResult {
+  id            Int      @id @default(autoincrement())
+  pollCycleId   Int
+  pollCycle     PollCycle @relation(fields: [pollCycleId], references: [id])
+  printerId     Int
+  printer       Printer  @relation(fields: [printerId], references: [id])
+  success       Boolean
+  errorMessage  String?
+  durationMs    Int?
+  readingsCount Int      @default(0)
+}
+
+model ReorderEvent {
+  id              Int       @id @default(autoincrement())
+  printerId       Int
+  printer         Printer   @relation(fields: [printerId], references: [id])
+  colorSlot       ColorSlot
+  qty             Int
+  reason          String    // THRESHOLD | MANUAL
+  cartridgeRowIds String    // JSON array of PrinterCartridgeRow ids written this event
+  ruleInputsJson  String?
+  pollCycleId     Int?
+  pollCycle       PollCycle? @relation(fields: [pollCycleId], references: [id])
+  triggeredAt     DateTime  @default(now())
+  excelWrittenAt  DateTime?
+  excelWriteError String?
+  emailSentAt     DateTime?
+  emailError      String?
+}
+
+model ReceiptEvent {
+  id              Int      @id @default(autoincrement())
+  printerId       Int
+  printer         Printer  @relation(fields: [printerId], references: [id])
+  colorSlot       ColorSlot
+  qtyReceived     Int
+  cartridgeRowIds String   // JSON array de PrinterCartridgeRow ids afectados
+  receivedAt      DateTime @default(now())
+  receivedByUserId Int?
+  receivedByUser  User?    @relation(fields: [receivedByUserId], references: [id])
+}
+
+// Recuerda si un color de una impresora ya está "avisado por email" para no
+// mandar un correo en cada ciclo mientras siga bajo — solo cuando cruza el
+// umbral hacia abajo (y se resetea cuando vuelve a subir por encima).
+model EmailAlertState {
+  id              Int       @id @default(autoincrement())
+  printerId       Int
+  printer         Printer   @relation(fields: [printerId], references: [id])
+  colorSlot       ColorSlot
+  currentlyBelow  Boolean   @default(false)
+  lastAlertedAt   DateTime?
+
+  @@unique([printerId, colorSlot])
+}
+
+model ExcelSyncLog {
+  id           Int       @id @default(autoincrement())
+  startedAt    DateTime
+  finishedAt   DateTime?
+  status       String    // SUCCESS | DEFERRED_LOCKED | FAILED
+  cellsWritten Int       @default(0)
+  lockDetected Boolean   @default(false)
+  retries      Int       @default(0)
+  errorMessage String?
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  lastLoginAt  DateTime?
+
+  sessions        Session[]
+  stockCellEdits  StockCell[]
+  receiptEvents   ReceiptEvent[]
+}
+
+model Session {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  key   String @id
+  value String // JSON-encoded
+}

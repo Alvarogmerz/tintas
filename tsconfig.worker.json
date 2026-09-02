@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "outDir": "dist-worker",
+    "rootDir": ".",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "declaration": false,
+    "sourceMap": false,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/worker/**/*.ts", "src/lib/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "src/app",
+    "src/components",
+    "src/lib/actions",
+    "src/lib/auth/guards.ts"
+  ]
+}

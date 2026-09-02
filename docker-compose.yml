@@ -1,0 +1,26 @@
+services:
+  web:
+    build: .
+    image: tintas-auto:latest
+    command: ["pnpm", "start"]
+    env_file: .env
+    environment:
+      - PORT=3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  poller:
+    build: .
+    image: tintas-auto:latest
+    command: ["node", "dist-worker/src/worker/poller.js"]
+    env_file: .env
+    # Acceso directo a la LAN: el sondeo SNMP tiene que llegar a cualquier IP
+    # de impresora (10.0.170.x, 10.0.210.x...) sin líos de NAT/puertos.
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+      - /mnt/yaiza-paty:/mnt/yaiza-paty
+    restart: unless-stopped
